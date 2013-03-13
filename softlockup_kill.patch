@@ -1,0 +1,115 @@
+diff --git a/Documentation/kernel-parameters.txt b/Documentation/kernel-parameters.txt
+index 81c287f..1609387 100644
+--- a/Documentation/kernel-parameters.txt
++++ b/Documentation/kernel-parameters.txt
+@@ -2418,6 +2418,10 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
+ 			[KNL] Should the soft-lockup detector generate panics.
+ 			Format: <integer>
+ 
++	softlockup_panic=
++			[KNL] Should the soft-lockup detector kill cpu hog process.
++			Format: <integer>
++
+ 	sonypi.*=	[HW] Sony Programmable I/O Control Device driver
+ 			See Documentation/laptops/sonypi.txt
+ 
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 1c4f3e9..4783fac 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -315,6 +315,7 @@ extern int proc_dowatchdog_thresh(struct ctl_table *table, int write,
+ 				  void __user *buffer,
+ 				  size_t *lenp, loff_t *ppos);
+ extern unsigned int  softlockup_panic;
++extern unsigned int  softlockup_kill;
+ void lockup_detector_init(void);
+ #else
+ static inline void touch_softlockup_watchdog(void)
+diff --git a/kernel/sysctl.c b/kernel/sysctl.c
+index ae27196..e79ea9c 100644
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -770,6 +770,15 @@ static struct ctl_table kern_table[] = {
+ 		.extra2		= &one,
+ 	},
+ 	{
++		.procname	= "softlockup_kill",
++		.data		= &softlockup_kill,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= &zero,
++		.extra2		= &one,
++	},
++	{
+ 		.procname       = "nmi_watchdog",
+ 		.data           = &watchdog_enabled,
+ 		.maxlen         = sizeof (int),
+diff --git a/kernel/watchdog.c b/kernel/watchdog.c
+index 1d7bca7..5832a90 100644
+--- a/kernel/watchdog.c
++++ b/kernel/watchdog.c
+@@ -75,6 +75,17 @@ static int __init softlockup_panic_setup(char *str)
+ }
+ __setup("softlockup_panic=", softlockup_panic_setup);
+ 
++unsigned int __read_mostly softlockup_kill =
++			CONFIG_BOOTPARAM_SOFTLOCKUP_KILL_VALUE;
++
++static int __init softlockup_kill_setup(char *str)
++{
++	softlockup_kill = simple_strtoul(str, NULL, 0);
++
++	return 1;
++}
++__setup("softlockup_kill=", softlockup_kill_setup);
++
+ static int __init nowatchdog_setup(char *str)
+ {
+ 	watchdog_enabled = 0;
+@@ -306,6 +317,13 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
+ 		else
+ 			dump_stack();
+ 
++		if (softlockup_kill) {
++			printk(KERN_ERR "Kill softlockup process [%s:%d] on CPU#%d\n",
++				current->comm, task_pid_nr(current),
++				smp_processor_id());
++			force_sig(SIGKILL, current);
++		}
++
+ 		if (softlockup_panic)
+ 			panic("softlockup: hung tasks");
+ 		__this_cpu_write(soft_watchdog_warn, true);
+diff --git a/lib/Kconfig.debug b/lib/Kconfig.debug
+index 82928f5..e4afc98 100644
+--- a/lib/Kconfig.debug
++++ b/lib/Kconfig.debug
+@@ -224,6 +224,27 @@ config BOOTPARAM_SOFTLOCKUP_PANIC_VALUE
+ 	default 0 if !BOOTPARAM_SOFTLOCKUP_PANIC
+ 	default 1 if BOOTPARAM_SOFTLOCKUP_PANIC
+ 
++config BOOTPARAM_SOFTLOCKUP_KILL
++	bool "Kill (cpu hog process) On Soft Lockups"
++	depends on LOCKUP_DETECTOR
++	help
++	  Say Y here to enable the kernel to kill cpu hog process on
++	  "soft lockups", which are bugs that cause the kernel to
++	  loop in kernel mode for more than 60 seconds, without giving
++	  other tasks a chance to run.
++
++	  This feature is useful for high-availability systems that
++	  have uptime guarantees and where a lockup must be resolved ASAP.
++
++	Say N if unsure.
++
++config BOOTPARAM_SOFTLOCKUP_KILL_VALUE
++	int
++	depends on LOCKUP_DETECTOR
++	range 0 1
++	default 0 if !BOOTPARAM_SOFTLOCKUP_KILL
++	default 1 if BOOTPARAM_SOFTLOCKUP_KILL
++
+ config DETECT_HUNG_TASK
+ 	bool "Detect Hung Tasks"
+ 	depends on DEBUG_KERNEL
